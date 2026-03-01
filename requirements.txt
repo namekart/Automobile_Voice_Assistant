@@ -2,7 +2,9 @@
 livekit-agents
 livekit-plugins-openai   # LLM (OpenRouter) + optional OpenAI TTS
 livekit-plugins-silero  # VAD (voice activity detection)
+livekit-plugins-turn-detector  # End-of-turn detection (multilingual)
 livekit-plugins-deepgram # STT (low-latency speech-to-text)
 livekit-plugins-sarvam  # STT/TTS for Indian languages (Sarvam AI)
 python-dotenv           # load .env (LIVEKIT_*, OPENROUTER_API_KEY)
 livekit-plugins-noise-cancellation
+asyncpg                 # Async PostgreSQL for CRM (non-blocking, low latency)

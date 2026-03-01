@@ -1,0 +1,12 @@
+{
+  "customer_name": "Mr. Amit Sharma",
+  "contact_id":"2db4ffd3-38ea-4a2b-8997-e4a49ad191e5",
+  "car_model": "Swift",
+  "number_ending": "1234",
+  "reason_for_call": "service_due",
+  "last_service_date": "2025-03-15",
+  "dealership_name": "ABC Motors",
+  "brand": "Maruti",
+  "phone_number": "1234567891",
+  "language_preference": "en-IN"
+}
