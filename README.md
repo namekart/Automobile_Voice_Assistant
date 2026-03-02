@@ -16,13 +16,9 @@ A voice agent for automobile customer support built with **LiveKit Agents** (Pyt
    cd Automobile_Voice_Assistant
    ```
 
-2. **Create a virtual environment and install dependencies**
-   ```bash
-   python -m venv voiceenv
-   voiceenv\Scripts\activate   # Windows
-   # source voiceenv/bin/activate   # Linux/macOS
-   pip install -r requirements.txt
-   ```
+2. **Install dependencies**
+   - **With uv** (recommended; [install uv](https://docs.astral.sh/uv/getting-started/installation/)): `uv sync` then `uv run agent.py download-files`
+   - **With pip**: `python -m venv voiceenv`, activate it (`voiceenv\Scripts\activate` on Windows, `source voiceenv/bin/activate` on Linux/macOS), then `pip install -r requirements.txt` and `python agent.py download-files`
 
 3. **Configure environment**
    - Copy `.env.example` to `.env` (or create `.env`) and set:
@@ -41,9 +37,8 @@ A voice agent for automobile customer support built with **LiveKit Agents** (Pyt
 
 ## Run
 
-```bash
-python agent.py dev
-```
+- **With uv**: `uv run agent.py dev`
+- **With pip**: activate the venv, then `python agent.py dev`
 
 Then open [LiveKit Playground](https://meet.livekit.io) (or your LiveKit project’s connect URL), join a room, and connect to the agent. The agent name is `my-agent`.
 
@@ -67,6 +62,7 @@ Then open [LiveKit Playground](https://meet.livekit.io) (or your LiveKit project
 
 ## Documentation
 
+- **RUN.md** — Step-by-step run instructions (uv and pip).
 - **SUMMARY.md** — Detailed project summary: pipeline, task flow, DB layer, env vars, solved issues, and planned work.
 
 ## License

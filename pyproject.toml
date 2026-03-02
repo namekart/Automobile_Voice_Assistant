@@ -1,0 +1,17 @@
+[project]
+name = "automobile-voice-assistant"
+version = "0.1.0"
+description = "Voice agent for automobile customer support (LiveKit Agents)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "livekit-agents[silero,turn-detector]>=1.4",
+    "livekit-plugins-openai>=1.4",
+    "livekit-plugins-silero>=1.4",
+    "livekit-plugins-turn-detector>=1.4",
+    "livekit-plugins-deepgram>=1.4",
+    "livekit-plugins-sarvam>=1.4",
+    "livekit-plugins-noise-cancellation>=0.2",
+    "python-dotenv>=1.0",
+    "asyncpg>=0.29",
+]
