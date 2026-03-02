@@ -148,6 +148,12 @@ class Assistant(Agent):
         call_context = self._call_context
         customer_name = call_context.get("customer_name") or "the customer"
 
+        # Remove note_car_issue so only SoftEngagementTask records issues during performance check (no duplicate DB/messages)
+        note_car_issue_tool = next((t for t in self.tools if getattr(t, "name", None) == "note_car_issue"), None)
+        if note_car_issue_tool:
+            self._note_car_issue_tool = note_car_issue_tool
+            await self.update_tools([t for t in self.tools if getattr(t, "name", None) != "note_car_issue"])
+
         logger.info("Assistant on_enter: starting VerifyCustomerTask (customer_name=%s)", customer_name)
         # 1. Verify we're speaking with the right person (task instructions active during task)
         verified = await VerifyCustomerTask(
@@ -213,26 +219,30 @@ class Assistant(Agent):
         )
         logger.info("Assistant on_enter: SoftEngagementTask finished, issues=%s", soft_result.issues)
 
-        # 5. Value add: brief pitch (genuine parts, technicians, pickup/drop, same-day, complimentary washing)
+        # Re-remove note_car_issue before value-add/greeting (framework may restore default tools when task ends)
+        await self.update_tools([t for t in self.tools if getattr(t, "name", None) != "note_car_issue"])
+        # 5. Value add then greeting (no note_car_issue available)
         await self.session.generate_reply(
-            instructions="Value-add in user's language: use genuine parts, company-trained technicians, pickup & drop, same-day delivery when possible, complimentary washing. 2 short sentences.",
+            instructions="Value-add, user's language: genuine parts, trained technicians, pickup & drop, same-day when possible, complimentary washing. Two short sentences.",
         )
-
         logger.info("Assistant on_enter: sending greeting (main conversation)")
-        # 6. Greet and offer assistance (Assistant instructions and tools apply from here)
         await self.session.generate_reply(
-            instructions="Greet and offer help with service or booking.",
+            instructions="Greet and offer help with service or booking. One short line.",
         )
+        # Re-enable note_car_issue for rest of call (new issues only; performance-check issues already saved)
+        if getattr(self, "_note_car_issue_tool", None):
+            await self.update_tools(self.tools + [self._note_car_issue_tool])
+            del self._note_car_issue_tool
 
     @function_tool
     async def note_car_issue(self, context: RunContext, issue: str) -> None:
-        """Record a vehicle issue the user mentioned. Call when they say another issue or describe a problem (noise, brake, AC, etc.)."""
-        issue = (issue or "").strip()
+        """Record a new vehicle issue mentioned after the performance check. Call only for issues the user brings up now; do not re-record issues already captured in that check."""
+        issue = (issue or "").strip()      
         if not issue:
             return
         call_context = self._call_context
-        await add_contact_note(
-            content=issue,
+        await add_contact_note( 
+            content=issue,   
             source="assistant",
             contact_id=call_context.get("contact_id"),
             phone_number=call_context.get("phone_number"),
@@ -241,8 +251,8 @@ class Assistant(Agent):
 
 
 def _prewarm(proc: JobProcess) -> None:
-    """Run once per process before any job. DB pool is created async on first use in entrypoint."""
-    pass
+    """Run once per process before any job. Preload VAD to avoid cold-start latency. DB pool is created async on first use in entrypoint."""
+    proc.userdata["vad"] = silero.VAD.load(min_silence_duration=0.35)
 
 
 server = AgentServer()
@@ -267,12 +277,13 @@ async def entrypoint(ctx: JobContext) -> None:
         stt=sarvam.STT(
             model="saaras:v3",
             language="unknown",
-            mode="translate",
+            mode="transcribe",
             high_vad_sensitivity=True,
             flush_signal=True,
         ),
         # OpenRouter: one extra hop, ~1s+ TTFT. For lower latency use direct OpenAI (set OPENAI_API_KEY) or local Ollama.
-        llm=openai.LLM.with_openrouter(model="openai/gpt-4o-mini"),
+        # llm=openai.LLM.with_openrouter(model="openai/gpt-4o-mini"),
+        llm=openai.LLM(model="gpt-4o-mini"),
         # llm=openai.LLM(model="gpt-4o-mini"),  # direct OpenAI, slightly lower TTFT
         # llm=openai.LLM.with_ollama(model="llama3.2"),  # local, no network latency; needs Ollama running
         tts=sarvam.TTS(
@@ -280,14 +291,14 @@ async def entrypoint(ctx: JobContext) -> None:
             target_language_code=TTS_LANGUAGE,
             speaker="shubh",
             pace=1.1,
-            speech_sample_rate=24000,
+            speech_sample_rate=8000,
         ),
-        vad=silero.VAD.load(),
+        vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
         userdata=session_userdata,
         preemptive_generation=False,
         min_endpointing_delay=0.3,
-        max_endpointing_delay=2.0,
+        max_endpointing_delay=1.5,
     )
     session.on("user_input_transcribed", on_user_input_transcribed)
 
@@ -295,27 +306,31 @@ async def entrypoint(ctx: JobContext) -> None:
     last_eou_metrics: metrics.EOUMetrics | None = None
 
     @session.on("metrics_collected")
-    def _on_metrics_collected(ev: MetricsCollectedEvent) -> None:
+    def _on_metrics_collected(ev: MetricsCollectedEvent):
         nonlocal last_eou_metrics
         if ev.metrics.type == "eou_metrics":
             last_eou_metrics = ev.metrics
+
         metrics.log_metrics(ev.metrics)
         usage_collector.collect(ev.metrics)
 
-    async def log_usage() -> None:
+
+    async def log_usage():
         summary = usage_collector.get_summary()
         logger.info("Usage summary: %s", summary)
+
 
     ctx.add_shutdown_callback(log_usage)
 
     @session.on("agent_state_changed")
-    def _on_agent_state_changed(ev: AgentStateChangedEvent) -> None:
+    def _on_agent_state_changed(ev: AgentStateChangedEvent):
         if (
             ev.new_state == "speaking"
-            and last_eou_metrics is not None
-            and session.current_speech is not None
+            and last_eou_metrics
+            and session.current_speech
             and last_eou_metrics.speech_id == session.current_speech.id
         ):
+            # EOUMetrics uses timestamp (float, epoch seconds); created_at is also float
             delta_s = ev.created_at - last_eou_metrics.timestamp
             logger.info("Time to first audio frame: %sms", round(delta_s * 1000))
 
