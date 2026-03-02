@@ -1,6 +1,4 @@
 """PostgreSQL connection and CRM helpers. Async (asyncpg) for non-blocking, low-latency voice agent."""
-from __future__ import annotations
-
 from dotenv import load_dotenv
 
 load_dotenv()
