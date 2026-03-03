@@ -1,7 +1,4 @@
-from __future__ import annotations
-
-import json
-import logging
+import json, logging, random
 from datetime import datetime
 from pathlib import Path
 
@@ -52,7 +49,7 @@ from tasks import (
 from db import init_db_connection, mark_phone_wrong, add_contact_note
 
 load_dotenv()
-AGENT_NAME = "Shubh"
+AGENT_NAME = random.choice(["Shubh", "Ritu", "Amit", "Sumit", "Pooja", "Manan", "Simran", "Rahul", "Kavya", "Ratan", "Priya", "Ishita", "Shreya", "Shruti"])
 
 # Call context: customer and vehicle info for this call. Load from JSON (MVP); later from DB or room metadata.
 CALL_CONTEXT_PATH = Path(__file__).resolve().parent / "data" / "call_context.json"
@@ -148,12 +145,6 @@ class Assistant(Agent):
         call_context = self._call_context
         customer_name = call_context.get("customer_name") or "the customer"
 
-        # Remove note_car_issue so only SoftEngagementTask records issues during performance check (no duplicate DB/messages)
-        note_car_issue_tool = next((t for t in self.tools if getattr(t, "name", None) == "note_car_issue"), None)
-        if note_car_issue_tool:
-            self._note_car_issue_tool = note_car_issue_tool
-            await self.update_tools([t for t in self.tools if getattr(t, "name", None) != "note_car_issue"])
-
         logger.info("Assistant on_enter: starting VerifyCustomerTask (customer_name=%s)", customer_name)
         # 1. Verify we're speaking with the right person (task instructions active during task)
         verified = await VerifyCustomerTask(
@@ -219,9 +210,7 @@ class Assistant(Agent):
         )
         logger.info("Assistant on_enter: SoftEngagementTask finished, issues=%s", soft_result.issues)
 
-        # Re-remove note_car_issue before value-add/greeting (framework may restore default tools when task ends)
-        await self.update_tools([t for t in self.tools if getattr(t, "name", None) != "note_car_issue"])
-        # 5. Value add then greeting (no note_car_issue available)
+        # 5. Value add then greeting
         await self.session.generate_reply(
             instructions="Value-add, user's language: genuine parts, trained technicians, pickup & drop, same-day when possible, complimentary washing. Two short sentences.",
         )
@@ -229,25 +218,22 @@ class Assistant(Agent):
         await self.session.generate_reply(
             instructions="Greet and offer help with service or booking. One short line.",
         )
-        # Re-enable note_car_issue for rest of call (new issues only; performance-check issues already saved)
-        if getattr(self, "_note_car_issue_tool", None):
-            await self.update_tools(self.tools + [self._note_car_issue_tool])
-            del self._note_car_issue_tool
 
-    @function_tool
-    async def note_car_issue(self, context: RunContext, issue: str) -> None:
-        """Record a new vehicle issue mentioned after the performance check. Call only for issues the user brings up now; do not re-record issues already captured in that check."""
-        issue = (issue or "").strip()      
-        if not issue:
-            return
-        call_context = self._call_context
-        await add_contact_note( 
-            content=issue,   
-            source="assistant",
-            contact_id=call_context.get("contact_id"),
-            phone_number=call_context.get("phone_number"),
-        )
-        logger.info("Assistant: noted car issue via tool: %s", issue[:80])
+    # Commented out: was running twice with SoftEngagement; issues are deferred to DB on disconnect via pending_contact_notes.
+    # @function_tool
+    # async def note_car_issue(self, context: RunContext, issue: str) -> None:
+    #     """Record a new vehicle issue mentioned after the performance check. Call only for issues the user brings up now; do not re-record issues already captured in that check."""
+    #     issue = (issue or "").strip()
+    #     if not issue:
+    #         return
+    #     call_context = self._call_context
+    #     await add_contact_note(
+    #         content=issue,
+    #         source="assistant",
+    #         contact_id=call_context.get("contact_id"),
+    #         phone_number=call_context.get("phone_number"),
+    #     )
+    #     logger.info("Assistant: noted car issue via tool: %s", issue[:80])
 
 
 def _prewarm(proc: JobProcess) -> None:
@@ -267,7 +253,8 @@ async def entrypoint(ctx: JobContext) -> None:
     await init_db_connection()
 
     # TTS fixed to hi-IN: Sarvam Bulbul v3 handles Hinglish (code-mixed) text with this code.
-    session_userdata: dict[str, str] = {"detected_language": "en-IN"}
+    # pending_contact_notes: list of {content, source, contact_id, phone_number} flushed to DB on disconnect
+    session_userdata: dict = {"detected_language": "en-IN", "pending_contact_notes": []}
 
     def on_user_input_transcribed(ev: UserInputTranscribedEvent) -> None:
         if ev.is_final and ev.language:
@@ -289,9 +276,9 @@ async def entrypoint(ctx: JobContext) -> None:
         tts=sarvam.TTS(
             model="bulbul:v3",
             target_language_code=TTS_LANGUAGE,
-            speaker="shubh",
+            speaker=AGENT_NAME.lower(),
             pace=1.1,
-            speech_sample_rate=8000,
+            speech_sample_rate=16000,
         ),
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
@@ -319,8 +306,20 @@ async def entrypoint(ctx: JobContext) -> None:
         summary = usage_collector.get_summary()
         logger.info("Usage summary: %s", summary)
 
+    async def flush_pending_notes():
+        pending = session.userdata.get("pending_contact_notes") or []
+        for entry in pending:
+            await add_contact_note(
+                content=entry["content"],
+                source=entry["source"],
+                contact_id=entry.get("contact_id"),
+                phone_number=entry.get("phone_number"),
+            )
+        if pending:
+            logger.info("Flushed %d pending contact note(s) to DB on disconnect", len(pending))
 
     ctx.add_shutdown_callback(log_usage)
+    ctx.add_shutdown_callback(flush_pending_notes)
 
     @session.on("agent_state_changed")
     def _on_agent_state_changed(ev: AgentStateChangedEvent):
