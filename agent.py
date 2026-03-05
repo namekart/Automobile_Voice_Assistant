@@ -1,4 +1,8 @@
-import json, logging, random
+import asyncio
+import json
+import logging
+import random
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -15,11 +19,13 @@ from livekit.agents import (
     JobProcess,
     MetricsCollectedEvent,
     UserInputTranscribedEvent,
+    UserStateChangedEvent,
     function_tool,
     metrics,
     room_io,
     RunContext,
 )
+from livekit.agents.llm import ChatContext, ChatMessage
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +46,19 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from tasks import (
     VerifyCustomerTask,
+    VerifyResult,
     RecordingConsentTask,
     PermissionToTalkTask,
     PermissionResult,
+    RelativeChoiceTask,
     SoftEngagementTask,
     SoftEngagementResult,
 )
 from db import init_db_connection, mark_phone_wrong, add_contact_note
 
 load_dotenv()
-AGENT_NAME = random.choice(["Shubh", "Ritu", "Amit", "Sumit", "Pooja", "Manan", "Simran", "Rahul", "Kavya", "Ratan", "Priya", "Ishita", "Shreya", "Shruti"])
+# AGENT_NAME = random.choice(["Shubh", "Ritu", "Amit", "Sumit", "Pooja", "Manan", "Simran", "Rahul", "Kavya", "Ratan", "Priya", "Ishita", "Shreya", "Shruti"])
+AGENT_NAME="Shubh"
 
 # Call context: customer and vehicle info for this call. Load from JSON (MVP); later from DB or room metadata.
 CALL_CONTEXT_PATH = Path(__file__).resolve().parent / "data" / "call_context.json"
@@ -71,6 +80,33 @@ DEFAULT_CALL_CONTEXT: dict[str, str | None] = {
 # Sarvam Bulbul v3 has no separate "Hinglish" code; it handles code-mixed (Hinglish) text when
 # target_language_code is hi-IN or en-IN. We use hi-IN so the assistant speaks in Hinglish/Hindi.
 TTS_LANGUAGE = "hi-IN"
+
+# STT validation: reject empty/garbage/inaudible before LLM; ask to repeat via LLM (user's language).
+# Inaudible pattern: some STT providers (e.g. Deepgram, AssemblyAI) inject tokens like [inaudible],
+# [unintelligible], etc. when speech is unclear. Sarvam may or may not; this is a safety net.
+# If you see Sarvam output different placeholders in logs, add them to the pattern below.
+INAUDIBLE_PATTERN = re.compile(
+    r"^[\s\[\]\.\,\-\*]*(\[?(?:inaudible|unintelligible|silence|noise|unclear|cough|laughter)\]?[\s\[\]\.\,\-\*]*)+$",
+    re.IGNORECASE,
+)
+# Message we inject so the LLM replies with "please repeat" in user's language (e.g. Hinglish).
+INAUDIBLE_MARKER = (
+    "[The user's speech was inaudible or unclear. "
+    "Respond with a single short request in the user's language (e.g. Hinglish) asking them to repeat. Nothing else.]"
+)
+
+
+def _is_valid_user_transcript(text: str | None) -> bool:
+    """Return False if transcript is empty, only whitespace, or only inaudible markers. Single words (e.g. yes/no) are valid."""
+    if text is None:
+        return False
+    s = (text or "").strip()
+    if not s:
+        return False
+    if INAUDIBLE_PATTERN.match(s):
+        return False
+    return True
+
 
 def _callback_when_for_speech(permission: PermissionResult) -> str:
     """Phrase for when we'll call: use LLM's speech_phrase (user language) or fallback to natural date (no digits)."""
@@ -115,18 +151,15 @@ def _build_instructions(call_context: dict[str, str | None]) -> str:
     last_date = call_context.get("last_service_date")
     dealership = call_context.get("dealership_name") or "our dealership"
     brand = call_context.get("brand") or "the brand"
-    base = f"""You are {AGENT_NAME}, automobile support voice assistant for {dealership} ({brand}). Help with service, bookings, escalate when needed. Concise, clear. Respond in user's language (e.g. Hinglish). When user mentions a vehicle issue (e.g. "one more issue", "AC noise") → call note_car_issue to record it."""
     number_line = f" (number ending {ending})" if ending else ""
     reason_line = reason.replace("_", " ")
-    if last_date:
-        context_block = f"""
-## This call
-You are calling {customer} about their {car}{number_line}. Reason for call: {reason_line}. Last service was on {last_date}. Dealership: {dealership}, authorized dealer for {brand}. Use this information naturally in your conversation."""
-    else:
-        context_block = f"""
-## This call
-You are calling {customer} about their {car}{number_line}. Reason for call: {reason_line}. Dealership: {dealership}, authorized dealer for {brand}. Use this information naturally in your conversation."""
-    return base + context_block
+    last_line = f" Last service was on {last_date}." if last_date else ""
+    context_block = f"""## This call
+You are calling {customer} about their {car}{number_line}. Reason: {reason_line}.{last_line} Dealership: {dealership} ({brand}). Use naturally in conversation."""
+    behavior = """## Behavior
+Stay calm and professional; never argue or be defensive. If the user is upset or sarcastic, acknowledge briefly and refocus on helping. If the user corrects any fact (e.g. wrong vehicle model, wrong service date), acknowledge and say you will get it updated, then call record_crm_correction. If the user says they sold the car, acknowledge, ask who has the car now, then call record_car_sold with any details they give."""
+    base = f"""You are {AGENT_NAME}, voice assistant for {dealership} ({brand}). Help with service and bookings. Concise, user's language (e.g. Hinglish)."""
+    return base + "\n\n" + context_block + "\n\n" + behavior
 
 
 # Production pattern: STT converts speech → English (for RAG/LLM). We capture detected user
@@ -141,20 +174,75 @@ class Assistant(Agent):
         instructions = _build_instructions(ctx)
         super().__init__(instructions=instructions)
 
+    async def on_user_turn_completed(
+        self, turn_ctx: ChatContext, new_message: ChatMessage
+    ) -> None:
+        """Reject empty/garbage/inaudible transcripts; replace with marker so LLM asks to repeat in user's language."""
+        raw = getattr(new_message, "text_content", None)
+        text = (raw() if callable(raw) else raw) if raw is not None else ""
+        if not _is_valid_user_transcript(text):
+            logger.info("STT validation: rejecting transcript (empty/garbage/inaudible), LLM will ask to repeat")
+            new_message.content = [INAUDIBLE_MARKER]
+            # Do not raise StopResponse: let LLM generate one short "please repeat" in user's language (e.g. Hinglish).
+
+    @function_tool
+    async def record_crm_correction(
+        self, context: RunContext, correction_type: str, correct_value: str
+    ) -> None:
+        """Call when the customer corrects a fact we have wrong (e.g. vehicle model, last service date). correction_type: e.g. 'car_model', 'last_service_date'. correct_value: what the customer said (e.g. 'Baleno', 'March')."""
+        ctype = (correction_type or "").strip() or "unknown"
+        val = (correct_value or "").strip() or ""
+        if not val:
+            return
+        content = f"{ctype}: {val}"
+        ctx = self._call_context
+        pending = self.session.userdata.get("pending_contact_notes") or []
+        if not isinstance(pending, list):
+            pending = []
+        pending.append({
+            "content": content,
+            "source": "assistant",
+            "contact_id": ctx.get("contact_id"),
+            "phone_number": ctx.get("phone_number"),
+            "note_type": "crm_correction",
+        })
+        self.session.userdata["pending_contact_notes"] = pending
+        logger.info("Assistant: record_crm_correction (deferred) %s=%s", ctype, val[:50])
+
+    @function_tool
+    async def record_car_sold(self, context: RunContext, new_owner_info: str = "") -> None:
+        """Call when the customer says they sold the car. After asking who has the car now, pass whatever they said as new_owner_info (or leave empty if they don't know)."""
+        info = (new_owner_info or "").strip()
+        content = "Car sold." + (f" New owner / details: {info}" if info else " New owner details not provided.")
+        ctx = self._call_context
+        pending = self.session.userdata.get("pending_contact_notes") or []
+        if not isinstance(pending, list):
+            pending = []
+        pending.append({
+            "content": content,
+            "source": "assistant",
+            "contact_id": ctx.get("contact_id"),
+            "phone_number": ctx.get("phone_number"),
+            "note_type": "car_sold",
+        })
+        self.session.userdata["pending_contact_notes"] = pending
+        logger.info("Assistant: record_car_sold (deferred) info=%s", info[:50] if info else "none")
+
     async def on_enter(self) -> None:
         call_context = self._call_context
         customer_name = call_context.get("customer_name") or "the customer"
 
         logger.info("Assistant on_enter: starting VerifyCustomerTask (customer_name=%s)", customer_name)
-        # 1. Verify we're speaking with the right person (task instructions active during task)
-        verified = await VerifyCustomerTask(
+        # 1. Verify we're speaking with the right person (verified / wrong_number / not_available)
+        result = await VerifyCustomerTask(
             chat_ctx=self.chat_ctx,
             customer_name=customer_name,
         )
-        logger.info("Assistant on_enter: VerifyCustomerTask finished, verified=%s", verified)
-        if not verified:
+        logger.info("Assistant on_enter: VerifyCustomerTask finished, verified=%s wrong_number=%s not_available=%s relation=%s",
+                    result.verified, result.wrong_number, result.not_available, result.relation or "")
+        if result.wrong_number:
             await self.session.generate_reply(
-                instructions="Say only: Koi baat nahi, dhanyavaad. Nothing else.",
+                instructions="One short line in user's language: apologise for the inconvenience and wish them a good day in user language. Nothing else.",
             )
             await mark_phone_wrong(
                 call_context.get("phone_number"),
@@ -163,6 +251,20 @@ class Assistant(Agent):
             )
             self.session.shutdown()
             return
+        if result.not_available:
+            # Relative on line: offer speak-to-me or call-back-later (single question, single LLM+tool turn)
+            continue_with_relative = await RelativeChoiceTask(
+                chat_ctx=self.chat_ctx,
+                customer_name=customer_name,
+            )
+            if not continue_with_relative:
+                await self.session.generate_reply(
+                    instructions="One short line in user's language: we will call back later. Thank and wish good day. Nothing else.",
+                )
+                self.session.shutdown()
+                return
+            # Continue conversation with relative (they will pass message); optional: set session.userdata["speaking_with_relative"] = result.relation
+            self.session.userdata["speaking_with_relative"] = result.relation or "relative"
 
         logger.info("Assistant on_enter: starting RecordingConsentTask")
         # 2. Introduction + recording consent (task instructions active during task)
@@ -178,6 +280,8 @@ class Assistant(Agent):
             self.session.userdata["recording_consent"] = "false"
 
         # 3. Permission to talk: state purpose, ask if 1 min convenient; if not, schedule callback
+        # Merge parent CRM tools so corrections (e.g. vehicle model) can be recorded during the task.
+        crm_tools = [t for t in self.tools if getattr(t, "id", None) in ("record_crm_correction", "record_car_sold")]
         logger.info("Assistant on_enter: starting PermissionToTalkTask")
         permission = await PermissionToTalkTask(
             chat_ctx=self.chat_ctx,
@@ -189,6 +293,7 @@ class Assistant(Agent):
             last_service_date=call_context.get("last_service_date"),
             phone_number=call_context.get("phone_number"),
             contact_id=call_context.get("contact_id"),
+            extra_tools=crm_tools,
         )
         logger.info("Assistant on_enter: PermissionToTalkTask finished, convenient=%s", permission.convenient)
         if not permission.convenient:
@@ -207,17 +312,15 @@ class Assistant(Agent):
             car_model=call_context.get("car_model") or "their vehicle",
             contact_id=call_context.get("contact_id"),
             phone_number=call_context.get("phone_number"),
+            extra_tools=crm_tools,
         )
         logger.info("Assistant on_enter: SoftEngagementTask finished, issues=%s", soft_result.issues)
 
-        # 5. Value add then greeting
+        # 5. Single transition: value-add + offer help (one reply for smooth handoff)
         await self.session.generate_reply(
-            instructions="Value-add, user's language: genuine parts, trained technicians, pickup & drop, same-day when possible, complimentary washing. Two short sentences.",
+            instructions="User's language: one short value-add (genuine parts, trained technicians, or pickup/drop) and one short line offering help with service or booking. Keep to two sentences total.",
         )
-        logger.info("Assistant on_enter: sending greeting (main conversation)")
-        await self.session.generate_reply(
-            instructions="Greet and offer help with service or booking. One short line.",
-        )
+        logger.info("Assistant on_enter: value-add + greeting sent, main conversation ready")
 
     # Commented out: was running twice with SoftEngagement; issues are deferred to DB on disconnect via pending_contact_notes.
     # @function_tool
@@ -260,6 +363,11 @@ async def entrypoint(ctx: JobContext) -> None:
         if ev.is_final and ev.language:
             session_userdata["detected_language"] = ev.language
 
+    # user_away_timeout: after this many seconds with no user speech, state becomes "away" (default ~15s).
+    USER_AWAY_TIMEOUT_S = 18  # 15–20s to check if user is there
+    STILL_THERE_CHECKS = 2  # number of "still there?" prompts before ending
+    STILL_THERE_WAIT_S = 10  # seconds between checks
+
     session = AgentSession(
         stt=sarvam.STT(
             model="saaras:v3",
@@ -286,8 +394,37 @@ async def entrypoint(ctx: JobContext) -> None:
         preemptive_generation=False,
         min_endpointing_delay=0.3,
         max_endpointing_delay=1.5,
+        user_away_timeout=USER_AWAY_TIMEOUT_S,
     )
     session.on("user_input_transcribed", on_user_input_transcribed)
+
+    inactivity_task: asyncio.Task | None = None
+
+    async def _user_away_sequence() -> None:
+        """After user went away: 2 'still there?' checks, then shutdown."""
+        nonlocal inactivity_task
+        try:
+            for i in range(STILL_THERE_CHECKS):
+                await session.generate_reply(
+                    instructions="The user has been inactive. Politely ask once if they are still there, in the user's language. One short sentence.",
+                )
+                if i < STILL_THERE_CHECKS - 1:
+                    await asyncio.sleep(STILL_THERE_WAIT_S)
+            session.shutdown()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            inactivity_task = None
+
+    @session.on("user_state_changed")
+    def _on_user_state_changed(ev: UserStateChangedEvent) -> None:
+        nonlocal inactivity_task
+        if ev.new_state == "away":
+            inactivity_task = asyncio.create_task(_user_away_sequence())
+            return
+        if inactivity_task is not None:
+            inactivity_task.cancel()
+            inactivity_task = None
 
     usage_collector = metrics.UsageCollector()
     last_eou_metrics: metrics.EOUMetrics | None = None
@@ -314,6 +451,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 source=entry["source"],
                 contact_id=entry.get("contact_id"),
                 phone_number=entry.get("phone_number"),
+                note_type=entry.get("note_type", "car_issue"),
             )
         if pending:
             logger.info("Flushed %d pending contact note(s) to DB on disconnect", len(pending))

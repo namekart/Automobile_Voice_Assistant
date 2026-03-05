@@ -1,6 +1,4 @@
 """Permission-to-talk task: state purpose, ask if convenient now; if not, schedule callback with a specific date (and optional time)."""
-from __future__ import annotations
-
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -48,13 +46,21 @@ class PermissionToTalkTask(AgentTask[PermissionResult]):
         last_service_date: str | None = None,
         phone_number: str | None = None,
         contact_id: str | None = None,
+        extra_tools: list | None = None,
     ) -> None:
         today = _today_iso()
         reason_script = self._reason_script(reason_for_call, last_service_date)
         super().__init__(
-            instructions=f"""Tell the reason for calling. Ask if the customer has 1 minute to talk. Get a clear answer. Be polite and concise. Speak in the user's language (e.g. Hinglish).
-Today's date: {today}. Resolve relative phrases (tomorrow, next week) to the correct calendar date; never use today when they mean later.
-If they have time now → user_has_time(). If busy → ask when to call back. When they give a time (or range like "one or two hours"): use the **latest** time they said, call schedule_callback **once** with callback_date (YYYY-MM-DD), optional callback_time (HH:MM 24h), preferred_raw, and speech_phrase (natural phrase in their language, no raw digits). Then confirm declaratively (e.g. "2 baje call karunga" or "ek ghante baad call karunga").""",
+            instructions=f"""State reason for call. Ask if they have 1(ek) minute. Get a clear answer. User's language (e.g. Hinglish).
+If user says didn't hear or unclear → re-ask in one short line. Only call tools when you have a clear answer.
+Today's date: {today}. Resolve relative phrases (tomorrow, next week) to the 
+correct calendar date; never use today when they mean later.
+If they have time now → user_has_time(). If busy → ask when to call back. When 
+they give a time (or range like "one or two hours"): use the **latest** time 
+they said, call schedule_callback **once** with callback_date (YYYY-MM-DD), 
+optional callback_time (HH:MM 24h), preferred_raw, and speech_phrase (natural 
+phrase in their language, no raw digits). Then confirm declaratively (e.g. "2 
+baje call karunga" or "ek ghante baad call karunga").""",
             chat_ctx=chat_ctx,
         )
         self._dealership_name = dealership_name
@@ -65,6 +71,7 @@ If they have time now → user_has_time(). If busy → ask when to call back. Wh
         self._phone_number = phone_number
         self._contact_id = contact_id
         self._callback_scheduled = False  # guard: only complete once
+        self._extra_tools = list(extra_tools) if extra_tools else []
 
     @staticmethod
     def _reason_script(reason: str, last_service_date: str | None) -> str:
@@ -77,6 +84,8 @@ If they have time now → user_has_time(). If busy → ask when to call back. Wh
         return "Hamare records ke according aapki gaadi ka periodic service due hai."
 
     async def on_enter(self) -> None:
+        if self._extra_tools:
+            await self.update_tools(list(self.tools) + self._extra_tools)
         dealer = self._dealership_name.strip() or "our dealership"
         brand = self._brand.strip() or "the brand"
         car = self._car_model.strip() or "their vehicle"
