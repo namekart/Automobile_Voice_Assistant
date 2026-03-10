@@ -1,0 +1,67 @@
+# Virtual environments (never pack local env for deploy; image builds its own)
+voiceenv/
+.venv/
+venv/
+env/
+
+# Environment and secrets
+.env
+voiceenv
+voiceenv\
+.env.*
+.env.local
+
+venv/
+voiceenv/
+.venv/
+env/
+.env.local
+.env.*.local
+
+# Environment variables (keep .env.example if you use one)
+.env
+
+# Python bytecode and artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Caches and test output
+.cache/
+.pytest_cache/
+.ruff_cache/
+coverage/
+
+# Logs and temp files
+*.log
+*.tmp
+*.tgz
+.tmp
+
+# VCS and editor
+.git
+.gitignore
+.gitattributes
+.idea/
+.vscode/
+.DS_Store
+
+# Project docs (optional; remove if you want them in image)
+README.md
+SUMMARY.md
+LICENSE
+
+# Tests and evals (not needed in production image)
+test/
+tests/
+eval/
+evals/
+agent_test.py
+
+# Cursor / local tooling
+.cursor/

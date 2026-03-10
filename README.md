@@ -69,6 +69,10 @@ Then open [LiveKit Playground](https://meet.livekit.io) (or your LiveKit project
 
 - **SUMMARY.md** — Detailed project summary: pipeline, task flow, DB layer, env vars, solved issues, and planned work.
 
+## Development / AI (Cursor)
+
+- For **LiveKit-related questions** (tasks, tools, turn detection, sessions, etc.), use the **LiveKit Docs MCP** first when available (e.g. `livekit-docs` server); then fall back to web search or official docs as needed.
+
 ## License
 
 Use according to your organization’s policy.

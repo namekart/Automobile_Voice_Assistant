@@ -21,6 +21,7 @@ from livekit.agents import (
     UserInputTranscribedEvent,
     UserStateChangedEvent,
     function_tool,
+    inference,
     metrics,
     room_io,
     RunContext,
@@ -41,7 +42,7 @@ logging.getLogger("livekit.plugins.sarvam").setLevel(logging.WARNING)
 logging.getLogger("livekit.plugins.sarvam.log").setLevel(logging.WARNING)
 logging.getLogger("livekit.plugins.sarvam.log.SpeechStream").setLevel(logging.WARNING)
 
-from livekit.plugins import deepgram, openai, silero, sarvam, noise_cancellation
+from livekit.plugins import deepgram, openai, silero, sarvam, elevenlabs, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from tasks import (
@@ -355,7 +356,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # Initialize DB pool so first DB op has no connection latency
     await init_db_connection()
 
-    # TTS fixed to hi-IN: Sarvam Bulbul v3 handles Hinglish (code-mixed) text with this code.
+    # TTS: ElevenLabs eleven_flash_v2_5 (language="hi" for Hinglish). Earlier: Sarvam Bulbul v3 (commented below).
     # pending_contact_notes: list of {content, source, contact_id, phone_number} flushed to DB on disconnect
     session_userdata: dict = {"detected_language": "en-IN", "pending_contact_notes": []}
 
@@ -369,25 +370,43 @@ async def entrypoint(ctx: JobContext) -> None:
     STILL_THERE_WAIT_S = 10  # seconds between checks
 
     session = AgentSession(
-        stt=sarvam.STT(
-            model="saaras:v3",
-            language="unknown",
-            mode="transcribe",
-            high_vad_sensitivity=True,
-            flush_signal=True,
+        # STT: Deepgram nova-3 (Hindi); set DEEPGRAM_API_KEY in .env
+        stt=deepgram.STT(
+            model="nova-3",
+            language="hi",
+            smart_format=True,
+            filler_words=True,
+            interim_results=True,
+            endpointing_ms=300,
         ),
+        # Earlier STT (Sarvam saaras:v3) – uncomment to compare:
+        # stt=sarvam.STT(
+        #     model="saaras:v3",
+        #     language="unknown",
+        #     mode="transcribe",
+        #     high_vad_sensitivity=True,
+        #     flush_signal=True,
+        # ),
         # OpenRouter: one extra hop, ~1s+ TTFT. For lower latency use direct OpenAI (set OPENAI_API_KEY) or local Ollama.
         # llm=openai.LLM.with_openrouter(model="openai/gpt-4o-mini"),
         llm=openai.LLM(model="gpt-4o-mini"),
         # llm=openai.LLM(model="gpt-4o-mini"),  # direct OpenAI, slightly lower TTFT
         # llm=openai.LLM.with_ollama(model="llama3.2"),  # local, no network latency; needs Ollama running
-        tts=sarvam.TTS(
-            model="bulbul:v3",
-            target_language_code=TTS_LANGUAGE,
-            speaker=AGENT_NAME.lower(),
-            pace=1.1,
-            speech_sample_rate=16000,
+        # TTS: LiveKit Inference ElevenLabs (no ELEVEN_API_KEY needed). See https://docs.livekit.io/agents/models/tts/elevenlabs/
+        tts=inference.TTS(
+            model="elevenlabs/eleven_flash_v2_5",
+            # voice="POnhGm9RFAuXoEgccZws",
+            language="hi",
         ),
+        # Direct descriptor alternative: tts="elevenlabs/eleven_turbo_v2_5:Xb7hH8MSUJpSbSDYk0k2"
+        # Earlier TTS (Sarvam Bulbul v3) – uncomment to compare:
+        # tts=sarvam.TTS(
+        #     model="bulbul:v3",
+        #     target_language_code=TTS_LANGUAGE,
+        #     speaker=AGENT_NAME.lower(),
+        #     pace=1.1,
+        #     speech_sample_rate=16000,
+        # ),
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
         userdata=session_userdata,
@@ -397,7 +416,7 @@ async def entrypoint(ctx: JobContext) -> None:
         user_away_timeout=USER_AWAY_TIMEOUT_S,
     )
     session.on("user_input_transcribed", on_user_input_transcribed)
-
+ 
     inactivity_task: asyncio.Task | None = None
 
     async def _user_away_sequence() -> None:

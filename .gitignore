@@ -52,5 +52,7 @@ Thumbs.db
 languages.json
 
 
-.cursor/rules/
+# Cursor (MCP config, rules – local/IDE-specific)
+.cursor/
+
 sql
