@@ -5,6 +5,7 @@ import random
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import AsyncIterable
 
 from dotenv import load_dotenv
 
@@ -108,6 +109,14 @@ def _is_valid_user_transcript(text: str | None) -> bool:
     return True
 
 
+_KEEP_TTS_CHARS = re.compile(r"[^\u0900-\u097F\u0000-\u007F\s\.,!?;:'\"-]")
+
+
+def _sanitize_for_tts(text: str) -> str:
+    """Keep Devanagari + Latin/ASCII content and strip unsupported scripts."""
+    return _KEEP_TTS_CHARS.sub("", text or "")
+
+
 def _callback_when_for_speech(permission: PermissionResult) -> str:
     """Phrase for when we'll call: use LLM's speech_phrase (user language) or fallback to natural date (no digits)."""
     if permission.speech_phrase and permission.speech_phrase.strip():
@@ -158,13 +167,22 @@ def _build_instructions(call_context: dict[str, str | None]) -> str:
 You are calling {customer} about their {car}{number_line}. Reason: {reason_line}.{last_line} Dealership: {dealership} ({brand}). Use naturally in conversation."""
     behavior = """## Behavior
 Stay calm and professional; never argue or be defensive. If the user is upset or sarcastic, acknowledge briefly and refocus on helping. If the user corrects any fact (e.g. wrong vehicle model, wrong service date), acknowledge and say you will get it updated, then call record_crm_correction. If the user says they sold the car, acknowledge, ask who has the car now, then call record_car_sold with any details they give."""
-    base = f"""You are {AGENT_NAME}, voice assistant for {dealership} ({brand}). Help with service and bookings. Concise, user's language (e.g. Hinglish)."""
-    return base + "\n\n" + context_block + "\n\n" + behavior
+    response_format = """## Response Format (telephony — follow exactly)
+- Maximum 2 sentences per reply. Ask only one question per turn.
+- Never read out a list; summarize in one sentence.
+- When confirming booking, say only date, time, and service type.
+- Do not repeat what the user just said verbatim unless needed for clarity.
+- No markdown, bullet points, or numbered lists in spoken output.
+- Hindi words must be in Devanagari (e.g. "ठीक है", "बताइए"), while English words (e.g. AC, service, slot, pickup-drop) can remain in Latin.
+- Never write Hindi words in Roman script (avoid "theek hai"; use "ठीक है").
+- Never output unsupported scripts (e.g. Hebrew, Telugu, Gujarati characters in Hindi responses).
+- You are male. Always use masculine Hindi verb forms (e.g. "कर सकता हूँ", "बोलूँगा", "करूँगा"). Never use slash forms like "sakta/sakti" or "बोलूँगा/बोलूँगी"."""
+    base = f"""You are {AGENT_NAME} (male), voice assistant for {dealership} ({brand}). Help with service and bookings. Concise, user's language (e.g. Hinglish)."""
+    return base + "\n\n" + context_block + "\n\n" + behavior + "\n\n" + response_format
 
 
-# Production pattern: STT converts speech → English (for RAG/LLM). We capture detected user
-# language from STT and store it in session userdata so we can use it later for TTS (speak in
-# user's language). Sarvam STT with language="unknown" returns language_code in the event.
+# Production pattern: STT transcribes Hindi + English code-mixed speech. We capture detected user
+# language from STT and store it in session userdata for metrics and future routing decisions.
 
 
 class Assistant(Agent):
@@ -184,6 +202,18 @@ class Assistant(Agent):
             logger.info("STT validation: rejecting transcript (empty/garbage/inaudible), LLM will ask to repeat")
             new_message.content = [INAUDIBLE_MARKER]
             # Do not raise StopResponse: let LLM generate one short "please repeat" in user's language (e.g. Hinglish).
+
+    async def tts_node(self, text: AsyncIterable[str], model_settings) -> AsyncIterable[rtc.AudioFrame]:
+        async def sanitize(stream: AsyncIterable[str]) -> AsyncIterable[str]:
+            async for chunk in stream:
+                cleaned = _sanitize_for_tts(chunk)
+                if cleaned.strip():
+                    yield cleaned
+                else:
+                    logger.warning("tts_node: dropped chunk with unsupported script: %r", (chunk or "")[:80])
+
+        async for frame in Agent.default.tts_node(self, sanitize(text), model_settings):
+            yield frame
 
     @function_tool
     async def record_crm_correction(
@@ -318,7 +348,7 @@ class Assistant(Agent):
 
         # 5. Single transition: value-add + offer help (one reply for smooth handoff)
         await self.session.generate_reply(
-            instructions="User's language: one short value-add (genuine parts, trained technicians, or pickup/drop) and one short line offering help with service or booking. Keep to two sentences total.",
+            instructions="Two sentences total in user's language: first sentence gives one value-add (genuine parts, trained technicians, or pickup-drop). Second sentence asks how you can help with service or booking. Keep Hindi words in Devanagari.",
         )
         logger.info("Assistant on_enter: value-add + greeting sent, main conversation ready")
 
@@ -341,7 +371,7 @@ class Assistant(Agent):
 
 def _prewarm(proc: JobProcess) -> None:
     """Run once per process before any job. Preload VAD to avoid cold-start latency. DB pool is created async on first use in entrypoint."""
-    proc.userdata["vad"] = silero.VAD.load(min_silence_duration=0.35)
+    proc.userdata["vad"] = silero.VAD.load(min_silence_duration=0.4)
 
 
 server = AgentServer()
@@ -371,15 +401,15 @@ async def entrypoint(ctx: JobContext) -> None:
     session = AgentSession(
         stt=sarvam.STT(
             model="saaras:v3",
-            language="unknown",
-            mode="transcribe",
+            language="hi-IN",
+            mode="codemix",
             high_vad_sensitivity=True,
             flush_signal=True,
         ),
         # OpenRouter: one extra hop, ~1s+ TTFT. For lower latency use direct OpenAI (set OPENAI_API_KEY) or local Ollama.
         # llm=openai.LLM.with_openrouter(model="openai/gpt-4o-mini"),
         llm=openai.LLM(model="gpt-4o-mini"),
-        # llm=openai.LLM(model="gpt-4o-mini"),  # direct OpenAI, slightly lower TTFT
+        # llm=openai.LLM(model="gpt-4o"),  # stronger instruction following, higher cost
         # llm=openai.LLM.with_ollama(model="llama3.2"),  # local, no network latency; needs Ollama running
         tts=sarvam.TTS(
             model="bulbul:v3",
@@ -391,9 +421,9 @@ async def entrypoint(ctx: JobContext) -> None:
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
         userdata=session_userdata,
-        preemptive_generation=False,
-        min_endpointing_delay=0.3,
-        max_endpointing_delay=1.5,
+        preemptive_generation=True,
+        min_endpointing_delay=0.5,
+        max_endpointing_delay=2.5,
         user_away_timeout=USER_AWAY_TIMEOUT_S,
     )
     session.on("user_input_transcribed", on_user_input_transcribed)
@@ -411,7 +441,8 @@ async def entrypoint(ctx: JobContext) -> None:
                 if i < STILL_THERE_CHECKS - 1:
                     await asyncio.sleep(STILL_THERE_WAIT_S)
             session.shutdown()
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RuntimeError):
+            # Session may already be closed (e.g. user disconnected); avoid "exception was never retrieved"
             pass
         finally:
             inactivity_task = None

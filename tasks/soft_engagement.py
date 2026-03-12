@@ -26,7 +26,7 @@ class SoftEngagementTask(AgentTask[SoftEngagementResult]):
         extra_tools: list | None = None,
     ) -> None:
         super().__init__(
-            instructions="Ask about performance and issues (noise, mileage, brake, AC). User's language. If they list issues: in one short reply say you have noted them and the technician will check; then call done_with_issues with the issue list. If no or no more issues: wrap up briefly and call done_no_issues. Call exactly one of done_with_issues or done_no_issues. Never say you are calling a tool or completing a step. No thank you or goodbye.",
+            instructions="Ask about performance and issues (noise, mileage, brake, AC). User's language. If they list issues: in one short reply say you have noted them and the technician will check; mention each issue naturally once, do not read back a long list; then call done_with_issues with the issue list. If no or no more issues: wrap up briefly and call done_no_issues. Call exactly one of done_with_issues or done_no_issues. Never say you are calling a tool or completing a step. No thank you or goodbye.",
             chat_ctx=chat_ctx,
         )
         self._car_model = car_model

@@ -1,0 +1,52 @@
+# Virtual environments
+.venv/
+venv/
+voiceenv/
+env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Caches and test output
+.cache/
+.pytest_cache/
+.ruff_cache/
+
+# Logs and temp files
+*.log
+*.gz
+*.tgz
+.tmp
+
+# Environment variables (injected at runtime by LiveKit Cloud)
+.env
+.env.*
+
+# VCS, editor, OS
+.git
+.gitignore
+.gitattributes
+.github/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Docs and misc
+README.md
+RUN.md
+SUMMARY.md
+LICENSE
+
+# LiveKit plans and cursor files
+*.plan.md
+.cursor/
+
+# KMS directory (internal tooling, not needed at runtime)
+KMS/

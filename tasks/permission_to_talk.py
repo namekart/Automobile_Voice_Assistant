@@ -51,8 +51,9 @@ class PermissionToTalkTask(AgentTask[PermissionResult]):
         today = _today_iso()
         reason_script = self._reason_script(reason_for_call, last_service_date)
         super().__init__(
-            instructions=f"""State reason for call. Ask if they have 1(ek) minute. Get a clear answer. User's language (e.g. Hinglish).
-If user says didn't hear or unclear → re-ask in one short line. Only call tools when you have a clear answer.
+            instructions=f"""State reason for call in one short sentence. Then ask if they have 1(ek) minute in one short sentence. Nothing else. User's language (e.g. Hinglish).
+If user says didn't hear, says "kya?" or asks who is calling, briefly re-explain and ask again. Do not treat confusion as busy.
+If user says didn't hear or unclear -> re-ask in one short line. Only call tools when you have a clear answer.
 Today's date: {today}. Resolve relative phrases (tomorrow, next week) to the 
 correct calendar date; never use today when they mean later.
 If they have time now → user_has_time(). If busy → ask when to call back. When 
@@ -98,7 +99,7 @@ baje call karunga" or "ek ghante baad call karunga").""",
             car,
         )
         await self.session.generate_reply(
-            instructions=f"""You are from {dealer}, authorized dealer for {brand}. Say you are calling regarding their {car}{number_line}. Then reason to call: {reason_line} Then ask: Kya abhi 1 minute baat karna convenient hoga?"""
+            instructions=f"""One short sentence: You are from {dealer}, authorized dealer for {brand}, calling regarding their {car}{number_line}; reason: {reason_line}. One short sentence question: Kya abhi 1 minute baat karna convenient hoga?"""
         )
         logger.info("PermissionToTalkTask: purpose and convenience question sent, waiting for user response")
 
