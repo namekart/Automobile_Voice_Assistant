@@ -33,12 +33,10 @@ class VerifyCustomerTask(AgentTask[VerifyResult]):
 
     def __init__(self, *, chat_ctx=None, customer_name: str = "the customer") -> None:
         super().__init__(
-            instructions="""Get a clear yes or no: are you speaking with the right customer?
-If user says they didn't hear, want repeat, or unclear → re-ask in one short line (user's language). Do NOT call any tool until you have a clear answer.
-If user confirms they are the customer → customer_verified().
-If user says wrong number or wrong person (not this contact) → customer_not_verified().
-If user says the customer is not on the line but they are a relative (e.g. wife, husband, son) → customer_not_available(relation="wife").
-Be polite, concise. Speak in user's language (e.g. Hinglish).""",
+            instructions="""Single yes/no question: are you speaking with the right customer?
+One sentence max per reply. No pleasantries, no filler. User's language (Hinglish).
+If unclear or not heard → re-ask in one short line.
+verified → customer_verified(). Wrong person → customer_not_verified(). Right person not available → customer_not_available(relation=...).""",
             chat_ctx=chat_ctx,
         )
         self._customer_name = customer_name
@@ -47,7 +45,7 @@ Be polite, concise. Speak in user's language (e.g. Hinglish).""",
         name = self._customer_name.strip() or "the customer"
         logger.info("VerifyCustomerTask on_enter: asking for verification for customer_name=%s", name)
         await self.session.generate_reply(
-            instructions=f"One short greeting, then ask: kya main {name} ji se baat kar raha hoon? (or same in user's language). Nothing else.",
+            instructions=f"Exactly one sentence: ask if you are speaking with {name} ji. No greeting, no filler. User's language (Hinglish).",
         )
         logger.info("VerifyCustomerTask: verification question sent, waiting for user response")
 

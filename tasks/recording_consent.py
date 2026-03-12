@@ -15,9 +15,9 @@ class RecordingConsentTask(AgentTask[bool]):
         dealership_name: str = "our dealership",
     ):
         super().__init__(
-            instructions="""Introduce yourself briefly and aAsk for recording consent. Get a clear yes or no.
-If user says didn't hear, want repeat, or unclear → re-ask in one short line (user's language). Do not call tools until you have a clear answer.
-Be polite, concise. Speak in user's language (e.g. Hinglish).""",
+            instructions="""Two sentences max total for this entire task. Ask for recording consent — one sentence only.
+If unclear or not heard → re-ask in one short line. No filler, no pleasantries. User's language (Hinglish).
+Do not call tools until you have a clear yes or no.""",
             chat_ctx=chat_ctx,
         )
         self._agent_name = agent_name
@@ -28,7 +28,7 @@ Be polite, concise. Speak in user's language (e.g. Hinglish).""",
         dealer = self._dealership_name.strip() or "our dealership"
         logger.info("RecordingConsentTask on_enter: intro + recording consent for agent=%s, dealer=%s", agent, dealer)
         await self.session.generate_reply(
-            instructions=f"Short intro: {agent} from {dealer}. Ask permission to record the call for quality and training; Make it clear that they can decline. Keep it brief.",
+            instructions=f"One sentence only: introduce yourself as {agent} from {dealer} and ask if the call can be recorded for quality. No extra sentences. User's language (Hinglish).",
         )
         logger.info("RecordingConsentTask: intro + consent question sent, waiting for user response")
 

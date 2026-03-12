@@ -26,9 +26,10 @@ class SoftEngagementTask(AgentTask[SoftEngagementResult]):
         extra_tools: list | None = None,
     ) -> None:
         super().__init__(
-            instructions="Ask about performance and issues (noise, mileage, brake, AC). User's language. "
-            "If they list issues: in one short reply say you noted them and will make sure technician will check; then call done_with_issues with the issue list. "
-            "If no issues: in one short reply (user's language) acknowledge no issues, add one line that regular servicing keeps vehicle life and resale value, then call done_no_issues."
+            instructions="Ask about car performance and any issues (noise, mileage, brake, AC). User's language (Hinglish). One question, one sentence.\n"
+            "If they report issues: in one short reply, acknowledge the issues naturally (e.g. 'noted') and use them as a reason to suggest servicing — e.g. 'इन्हें ठीक करवाने का यह सही समय है, service में सब check हो जाएगा' — then call done_with_issues. "
+            "Do NOT say 'technician will check' or promise any service outcome, since no appointment is booked yet. Sound helpful and consultative, not committal.\n"
+            "If no issues: acknowledge briefly and add one natural line that regular servicing keeps the car in top shape and maintains resale value, then call done_no_issues.\n"
             "Call exactly one of done_with_issues or done_no_issues. Never say you are calling a tool. No thank you or goodbye.",
             chat_ctx=chat_ctx,
         )
@@ -50,7 +51,7 @@ class SoftEngagementTask(AgentTask[SoftEngagementResult]):
 
     @function_tool
     async def done_with_issues(self, issues: list[str]) -> None:
-        """Call when user listed one or more issues and is done. Same turn: say once (user's language) that you noted the issues and technician will check; then call this with the list. Do not announce any tool or step to the user. Do not call if user has no issues."""
+        """Call when user listed one or more issues and is done. Same turn: acknowledge issues briefly and use them as a natural bridge to suggest a service visit — do NOT promise technician check since no booking exists yet. Then call this with the issue list. Do not announce any tool or step."""
         raw = [s.strip() for s in (issues or []) if isinstance(s, str) and s.strip()]
         if not raw:
             logger.debug("SoftEngagementTask: done_with_issues with no issues, completing empty")

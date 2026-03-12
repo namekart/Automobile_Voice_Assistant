@@ -14,7 +14,8 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def _today_iso() -> str:
-    return datetime.now(IST).strftime("%Y-%m-%d")
+    d = datetime.now(IST)
+    return f"{d.day} {d.strftime('%B %Y (%A)')}"
 
 
 @dataclass
@@ -51,16 +52,12 @@ class PermissionToTalkTask(AgentTask[PermissionResult]):
         today = _today_iso()
         reason_script = self._reason_script(reason_for_call, last_service_date)
         super().__init__(
-            instructions=f"""State reason for call. Ask if they have 1(ek) minute. Get a clear answer. User's language (e.g. Hinglish).
-If user says didn't hear or unclear → re-ask in one short line. Only call tools when you have a clear answer.
-Today's date: {today}. Resolve relative phrases (tomorrow, next week) to the 
-correct calendar date; never use today when they mean later.
-If they have time now and want to continue the conversation → user_has_time(). If busy → ask when to call back. When 
-they give a time (or range like "one or two hours"): use the **latest** time 
-they said, call schedule_callback **once** with callback_date (YYYY-MM-DD), 
-optional callback_time (HH:MM 24h), preferred_raw, and speech_phrase (natural 
-phrase in their language, no raw digits). Then confirm declaratively (e.g. "2 
-baje call karunga" or "ek ghante baad call karunga").""",
+            instructions=f"""Two sentences max per reply. No filler. User's language (Hinglish).
+State reason for call + ask if 1 minute is convenient — in two sentences total. Get a clear yes/no.
+Do NOT re-introduce the dealership or agent name — that was already done. Only mention the dealership if the user sounds confused about who is calling or explicitly asks.
+If unclear → re-ask in one short line. Only call tools when you have a clear answer.
+Today's date: {today}. Resolve relative phrases (tomorrow, next week) to the correct calendar date.
+yes/time now → user_has_time(). Busy → ask when to call back, then schedule_callback once with callback_date (YYYY-MM-DD), optional callback_time (HH:MM 24h), preferred_raw, speech_phrase. Confirm in one sentence (e.g. "2 baje call karunga").""",
             chat_ctx=chat_ctx,
         )
         self._dealership_name = dealership_name
@@ -98,7 +95,7 @@ baje call karunga" or "ek ghante baad call karunga").""",
             car,
         )
         await self.session.generate_reply(
-            instructions=f"""You are from {dealer}, authorized dealer for {brand}. Say you are calling regarding their {car}{number_line}. Then reason to call: {reason_line} Then ask: Kya abhi 1 minute baat karna convenient hoga?"""
+            instructions=f"""Exactly two sentences. Do NOT re-introduce dealership or your name — already done. (1) State the reason: {car}{number_line} ke baare mein — {reason_line} (2) Kya abhi 1 minute convenient hai? Nothing else."""
         )
         logger.info("PermissionToTalkTask: purpose and convenience question sent, waiting for user response")
 

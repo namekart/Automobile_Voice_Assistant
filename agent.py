@@ -3,7 +3,7 @@ import json
 import logging
 import random
 import re
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -116,7 +116,7 @@ def _callback_when_for_speech(permission: PermissionResult) -> str:
     if permission.callback_date:
         try:
             dt = datetime.strptime(permission.callback_date.strip()[:10], "%Y-%m-%d")
-            date_part = f"{dt.day} {dt.strftime('%B')} ko"
+            date_part = f"{dt.day} {dt.strftime('%B %Y')} ko"
             return f"{date_part} subah 10 aur 12 ke beech" if not permission.callback_time else f"{date_part} ke around"
         except (ValueError, TypeError):
             pass
@@ -143,6 +143,14 @@ def load_call_context() -> dict[str, str | None]:
         return dict(DEFAULT_CALL_CONTEXT)
 
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _today_ist() -> str:
+    d = datetime.now(_IST)
+    return f"{d.day} {d.strftime('%B %Y (%A)')}"
+
+
 def _build_instructions(call_context: dict[str, str | None]) -> str:
     """Build assistant instructions from base persona and call context."""
     customer = call_context.get("customer_name") or "the customer"
@@ -154,13 +162,35 @@ def _build_instructions(call_context: dict[str, str | None]) -> str:
     brand = call_context.get("brand") or "the brand"
     number_line = f" (number ending {ending})" if ending else ""
     reason_line = reason.replace("_", " ")
-    last_line = f" Last service was on {last_date}." if last_date else ""
+    if last_date:
+        try:
+            _ld = datetime.strptime(last_date.strip()[:10], "%Y-%m-%d")
+            last_date_spoken = f"{_ld.day} {_ld.strftime('%B %Y')}"
+        except (ValueError, TypeError):
+            last_date_spoken = last_date
+        last_line = f" Last service was on {last_date_spoken}."
+    else:
+        last_line = ""
+    today = _today_ist()
     context_block = f"""## This call
-You are calling {customer} about their {car}{number_line}. Reason: {reason_line}.{last_line} Dealership: {dealership} ({brand}). Use naturally in conversation."""
+Today's date: {today} (IST). You are calling {customer} about their {car}{number_line}. Reason: {reason_line}.{last_line} Dealership: {dealership} ({brand}). Use naturally in conversation. Always resolve relative dates (e.g. "tomorrow", "next Monday") against today's date."""
     behavior = """## Behavior
 Stay calm and professional; never argue or be defensive. If the user is upset or sarcastic, acknowledge briefly and refocus on helping. If the user corrects any fact (e.g. wrong vehicle model, wrong service date), acknowledge and say you will get it updated, then call record_crm_correction. If the user says they sold the car, acknowledge, ask who has the car now, then call record_car_sold with any details they give."""
-    base = f"""You are {AGENT_NAME}, voice assistant for {dealership} ({brand}). Help with service and bookings. Concise, user's language (e.g. Hinglish)."""
-    return base + "\n\n" + context_block + "\n\n" + behavior
+    goal = """## Goal & Performance
+Your primary goal is to successfully book a service appointment for the customer — this is how your performance is measured. If the customer has a legitimate service need, guide the conversation toward confirming a booking. Be smart about it: address concerns naturally, highlight genuine value (trained technicians, genuine parts, pickup-drop), and make it easy for them to say yes. Never be pushy or desperate — one soft suggestion per hesitation is enough. If they are not ready today, schedule a callback and end gracefully."""
+    response_format = """## Response Format (telephony — follow exactly)
+- Maximum 2 sentences per reply. Ask only one question per turn.
+- Never read out a list; summarize in one sentence.
+- When confirming booking, say only date, time, and service type.
+- Do not repeat what the user just said verbatim unless needed for clarity.
+- No markdown, bullet points, or numbered lists in spoken output.
+- Hindi words must be in Devanagari (e.g. "ठीक है", "बताइए"), while English words (e.g. AC, service, slot, pickup-drop) can remain in Latin.
+- Never write Hindi words in Roman script (avoid "theek hai"; use "ठीक है").
+- Never output unsupported scripts (e.g. Hebrew, Telugu, Gujarati characters in Hindi responses).
+- You are male. Always use masculine Hindi verb forms (e.g. "कर सकता हूँ", "बोलूँगा", "करूँगा"). Never use slash forms like "sakta/sakti" or "बोलूँगा/बोलूँगी".
+- Always say dates as "20 March 2026" — never as "2026-03-20" or "20/03/26". TTS will pronounce the natural format correctly."""
+    base = f"""You are {AGENT_NAME} (male), voice assistant for {dealership} ({brand}). Help with service and bookings. Concise, user's language (e.g. Hinglish)."""
+    return base + "\n\n" + context_block + "\n\n" + behavior + "\n\n" + goal + "\n\n" + response_format
 
 
 # Production pattern: STT converts speech → English (for RAG/LLM). We capture detected user
@@ -392,15 +422,17 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=openai.LLM(model="gpt-4o-mini"),
         # llm=openai.LLM(model="gpt-4o-mini"),  # direct OpenAI, slightly lower TTFT
         # llm=openai.LLM.with_ollama(model="llama3.2"),  # local, no network latency; needs Ollama running
-        # TTS: Cartesia sonic-3 with Ishan voice. Set CARTESIA_API_KEY in .env.
+        # TTS: Cartesia sonic-3 with Ayush voice (Hindi male, friendly neighbor).
         # For lowest latency use model="sonic-turbo" (fewer languages than sonic-3).
         tts=cartesia.TTS(
             model="sonic-3",
-            voice="fd2ada67-c2d9-4afe-b474-6386b87d8fc3",  # Ishan
+            voice="791d5162-d5eb-40f0-8189-f19db44611d8",  # Ayush - Friendly Neighbor
             language="hi",
             emotion="content",
-            speed=0.95,
+            speed=1.1,
         ),
+        # Other Hindi male voices: Anuj (7e8cb11d), Sagar (6303e5fb)
+        # Previous voice: Ishan (fd2ada67-c2d9-4afe-b474-6386b87d8fc3)
         # Earlier TTS (ElevenLabs) – uncomment to compare:
         # tts=elevenlabs.TTS(
         #     voice_id="cgSgspJ2msm6clMCkdW9",

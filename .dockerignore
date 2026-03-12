@@ -1,27 +1,15 @@
-# Virtual environments (never pack local env for deploy; image builds its own)
+# Virtual environments (the image builds its own via uv)
 voiceenv/
 .venv/
 venv/
 env/
 
-# Environment and secrets
+# Secrets — injected at runtime by LiveKit Cloud
 .env
-voiceenv
-voiceenv\
 .env.*
 .env.local
 
-venv/
-voiceenv/
-.venv/
-env/
-.env.local
-.env.*.local
-
-# Environment variables (keep .env.example if you use one)
-.env
-
-# Python bytecode and artifacts
+# Python bytecode and build artifacts
 __pycache__/
 *.py[cod]
 *.pyo
@@ -42,6 +30,7 @@ coverage/
 *.tmp
 *.tgz
 .tmp
+logs/
 
 # VCS and editor
 .git
@@ -51,7 +40,7 @@ coverage/
 .vscode/
 .DS_Store
 
-# Project docs (optional; remove if you want them in image)
+# Project docs
 README.md
 SUMMARY.md
 LICENSE
@@ -62,6 +51,9 @@ tests/
 eval/
 evals/
 agent_test.py
+
+# Internal tooling — not needed at runtime
+KMS/
 
 # Cursor / local tooling
 .cursor/
