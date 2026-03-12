@@ -42,7 +42,7 @@ logging.getLogger("livekit.plugins.sarvam").setLevel(logging.WARNING)
 logging.getLogger("livekit.plugins.sarvam.log").setLevel(logging.WARNING)
 logging.getLogger("livekit.plugins.sarvam.log.SpeechStream").setLevel(logging.WARNING)
 
-from livekit.plugins import deepgram, openai, silero, sarvam, elevenlabs, noise_cancellation
+from livekit.plugins import deepgram, openai, silero, sarvam, elevenlabs, cartesia, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from tasks import (
@@ -59,7 +59,7 @@ from db import init_db_connection, mark_phone_wrong, add_contact_note
 
 load_dotenv()
 # AGENT_NAME = random.choice(["Shubh", "Ritu", "Amit", "Sumit", "Pooja", "Manan", "Simran", "Rahul", "Kavya", "Ratan", "Priya", "Ishita", "Shreya", "Shruti"])
-AGENT_NAME="Shubh"
+AGENT_NAME="Ishan"
 
 # Call context: customer and vehicle info for this call. Load from JSON (MVP); later from DB or room metadata.
 CALL_CONTEXT_PATH = Path(__file__).resolve().parent / "data" / "call_context.json"
@@ -356,7 +356,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # Initialize DB pool so first DB op has no connection latency
     await init_db_connection()
 
-    # TTS: ElevenLabs eleven_flash_v2_5 (language="hi" for Hinglish). Earlier: Sarvam Bulbul v3 (commented below).
+    # TTS: Cartesia sonic-3, voice Ishan (language="hi"). Earlier: ElevenLabs / Sarvam (commented below).
     # pending_contact_notes: list of {content, source, contact_id, phone_number} flushed to DB on disconnect
     session_userdata: dict = {"detected_language": "en-IN", "pending_contact_notes": []}
 
@@ -377,7 +377,7 @@ async def entrypoint(ctx: JobContext) -> None:
             smart_format=True,
             filler_words=True,
             interim_results=True,
-            endpointing_ms=300,
+            endpointing_ms=200,
         ),
         # Earlier STT (Sarvam saaras:v3) – uncomment to compare:
         # stt=sarvam.STT(
@@ -392,14 +392,23 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=openai.LLM(model="gpt-4o-mini"),
         # llm=openai.LLM(model="gpt-4o-mini"),  # direct OpenAI, slightly lower TTFT
         # llm=openai.LLM.with_ollama(model="llama3.2"),  # local, no network latency; needs Ollama running
-        # TTS: LiveKit Inference ElevenLabs (no ELEVEN_API_KEY needed). See https://docs.livekit.io/agents/models/tts/elevenlabs/
-        tts=inference.TTS(
-            model="elevenlabs/eleven_flash_v2_5",
-            # voice="POnhGm9RFAuXoEgccZws",
+        # TTS: Cartesia sonic-3 with Ishan voice. Set CARTESIA_API_KEY in .env.
+        # For lowest latency use model="sonic-turbo" (fewer languages than sonic-3).
+        tts=cartesia.TTS(
+            model="sonic-3",
+            voice="fd2ada67-c2d9-4afe-b474-6386b87d8fc3",  # Ishan
             language="hi",
+            emotion="content",
+            speed=0.95,
         ),
-        # Direct descriptor alternative: tts="elevenlabs/eleven_turbo_v2_5:Xb7hH8MSUJpSbSDYk0k2"
-        # Earlier TTS (Sarvam Bulbul v3) – uncomment to compare:
+        # Earlier TTS (ElevenLabs) – uncomment to compare:
+        # tts=elevenlabs.TTS(
+        #     voice_id="cgSgspJ2msm6clMCkdW9",
+        #     model="eleven_flash_v2_5",
+        #     language="hi",
+        # ),
+        # LiveKit Inference ElevenLabs (no ELEVEN_API_KEY): tts=inference.TTS(model="elevenlabs/eleven_flash_v2_5", voice="...", language="hi")
+        # Earlier TTS (Sarvam Bulbul v3):
         # tts=sarvam.TTS(
         #     model="bulbul:v3",
         #     target_language_code=TTS_LANGUAGE,
@@ -410,7 +419,7 @@ async def entrypoint(ctx: JobContext) -> None:
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
         userdata=session_userdata,
-        preemptive_generation=False,
+        preemptive_generation=True,
         min_endpointing_delay=0.3,
         max_endpointing_delay=1.5,
         user_away_timeout=USER_AWAY_TIMEOUT_S,

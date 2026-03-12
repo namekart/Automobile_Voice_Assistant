@@ -55,7 +55,7 @@ class PermissionToTalkTask(AgentTask[PermissionResult]):
 If user says didn't hear or unclear → re-ask in one short line. Only call tools when you have a clear answer.
 Today's date: {today}. Resolve relative phrases (tomorrow, next week) to the 
 correct calendar date; never use today when they mean later.
-If they have time now → user_has_time(). If busy → ask when to call back. When 
+If they have time now and want to continue the conversation → user_has_time(). If busy → ask when to call back. When 
 they give a time (or range like "one or two hours"): use the **latest** time 
 they said, call schedule_callback **once** with callback_date (YYYY-MM-DD), 
 optional callback_time (HH:MM 24h), preferred_raw, and speech_phrase (natural 
@@ -104,7 +104,7 @@ baje call karunga" or "ek ghante baad call karunga").""",
 
     @function_tool
     async def user_has_time(self) -> None:
-        """Use when the user says they have time to talk now."""
+        """Call when user clearly says they have time to talk now. Call this as soon as you get a yes; do not ask about appointments or scheduling in the same turn. Do not call if they said they are busy or want a callback later."""
         logger.info("PermissionToTalkTask: user_has_time -> completing with convenient=True")
         self.complete(PermissionResult(convenient=True))
 

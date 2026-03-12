@@ -5,7 +5,8 @@ livekit-plugins-silero  # VAD (voice activity detection)
 livekit-plugins-turn-detector  # End-of-turn detection (multilingual)
 livekit-plugins-deepgram # STT (low-latency speech-to-text)
 livekit-plugins-sarvam  # STT/TTS for Indian languages (Sarvam AI)
-livekit-plugins-elevenlabs  # TTS (ElevenLabs eleven_flash_v2_5) - set ELEVEN_API_KEY in .env
+livekit-plugins-elevenlabs  # TTS (ElevenLabs) - set ELEVEN_API_KEY in .env (commented in agent)
+livekit-plugins-cartesia   # TTS (Cartesia sonic-3, Ishan voice) - set CARTESIA_API_KEY in .env
 python-dotenv           # load .env (LIVEKIT_*, OPENROUTER_API_KEY)
 livekit-plugins-noise-cancellation
 asyncpg                 # Async PostgreSQL for CRM (non-blocking, low latency)

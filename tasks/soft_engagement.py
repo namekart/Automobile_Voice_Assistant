@@ -26,7 +26,10 @@ class SoftEngagementTask(AgentTask[SoftEngagementResult]):
         extra_tools: list | None = None,
     ) -> None:
         super().__init__(
-            instructions="Ask about performance and issues (noise, mileage, brake, AC). User's language. If they list issues: in one short reply say you have noted them and the technician will check; then call done_with_issues with the issue list. If no or no more issues: wrap up briefly and call done_no_issues. Call exactly one of done_with_issues or done_no_issues. Never say you are calling a tool or completing a step. No thank you or goodbye.",
+            instructions="Ask about performance and issues (noise, mileage, brake, AC). User's language. "
+            "If they list issues: in one short reply say you noted them and will make sure technician will check; then call done_with_issues with the issue list. "
+            "If no issues: in one short reply (user's language) acknowledge no issues, add one line that regular servicing keeps vehicle life and resale value, then call done_no_issues."
+            "Call exactly one of done_with_issues or done_no_issues. Never say you are calling a tool. No thank you or goodbye.",
             chat_ctx=chat_ctx,
         )
         self._car_model = car_model
@@ -73,13 +76,10 @@ class SoftEngagementTask(AgentTask[SoftEngagementResult]):
 
     @function_tool
     async def done_no_issues(self) -> None:
-        """Call only when user has zero issues (said no issues at all). Do not call if they listed any issues."""
+        """Call only when user has zero issues (said no issues at all). Call after you have said the wrap-up and servicing line in the same turn. Do not call if they listed any issues."""
         if getattr(self, "_completed", False):
             logger.debug("SoftEngagementTask: done_no_issues skipped, task already complete")
             return
-        await self.session.generate_reply(
-            instructions="One line, user's language: regular servicing keeps vehicle life and resale value. Nothing else.",
-        )
         logger.info("SoftEngagementTask: done_no_issues -> completing with empty list")
         self._completed = True
         self.complete(SoftEngagementResult(issues=[]))
