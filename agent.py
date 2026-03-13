@@ -319,7 +319,7 @@ class Assistant(Agent):
 
         # 5. Single transition: value-add + offer help (one reply for smooth handoff)
         await self.session.generate_reply(
-            instructions="User's language: one short value-add (genuine parts, trained technicians, or pickup/drop) and one short line offering help with service or booking. Keep to two sentences total.",
+            instructions="In user's language: value-add to impress—at our dealership we have these benefits (genuine parts, trained technicians, pickup and drop for service). Then ask: Can I book a slot for your car's service next week? Keep it natural and brief.",
         )
         logger.info("Assistant on_enter: value-add + greeting sent, main conversation ready")
 
@@ -370,15 +370,18 @@ async def entrypoint(ctx: JobContext) -> None:
     STILL_THERE_WAIT_S = 10  # seconds between checks
 
     session = AgentSession(
-        # STT: Deepgram nova-3 (Hindi); set DEEPGRAM_API_KEY in .env
-        stt=deepgram.STT(
-            model="nova-3",
+        # STT: LiveKit Inference deepgram/nova-3-general (Hindi) – colocated in Mumbai for lower transcription_delay; no DEEPGRAM_API_KEY needed
+        stt=inference.STT(
+            model="deepgram/nova-3-general",
             language="hi",
-            smart_format=True,
-            filler_words=True,
-            interim_results=True,
-            endpointing_ms=200,
+            extra_kwargs={
+                "smart_format": True,
+                "filler_words": True,
+                "interim_results": True,
+                "endpointing_ms": 100,
+            },
         ),
+        # Direct Deepgram plugin (higher latency from India): stt=deepgram.STT(model="nova-3", language="hi", ...)
         # Earlier STT (Sarvam saaras:v3) – uncomment to compare:
         # stt=sarvam.STT(
         #     model="saaras:v3",
@@ -399,7 +402,7 @@ async def entrypoint(ctx: JobContext) -> None:
             voice="fd2ada67-c2d9-4afe-b474-6386b87d8fc3",  # Ishan
             language="hi",
             emotion="content",
-            speed=0.95,
+            speed=0.98,
         ),
         # Earlier TTS (ElevenLabs) – uncomment to compare:
         # tts=elevenlabs.TTS(
@@ -420,8 +423,8 @@ async def entrypoint(ctx: JobContext) -> None:
         turn_detection=MultilingualModel(),
         userdata=session_userdata,
         preemptive_generation=True,
-        min_endpointing_delay=0.3,
-        max_endpointing_delay=1.5,
+        min_endpointing_delay=0.2,
+        max_endpointing_delay=1.3,
         user_away_timeout=USER_AWAY_TIMEOUT_S,
     )
     session.on("user_input_transcribed", on_user_input_transcribed)

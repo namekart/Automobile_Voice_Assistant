@@ -1,4 +1,9 @@
 # Virtual environments (never pack local env for deploy; image builds its own)
+voiceenv
+voiceenv/
+voiceenv/**
+**/voiceenv
+**/voiceenv/**
 voiceenv/
 .venv/
 venv/
@@ -17,7 +22,10 @@ voiceenv/
 env/
 .env.local
 .env.*.local
-
+voiceenv
+voiceenv/**
+**/voiceenv
+**/voiceenv/**
 # Environment variables (keep .env.example if you use one)
 .env
 

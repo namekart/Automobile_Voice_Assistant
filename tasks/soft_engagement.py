@@ -26,10 +26,9 @@ class SoftEngagementTask(AgentTask[SoftEngagementResult]):
         extra_tools: list | None = None,
     ) -> None:
         super().__init__(
-            instructions="Ask about performance and issues (noise, mileage, brake, AC). User's language. "
-            "If they list issues: in one short reply say you noted them and will make sure technician will check; then call done_with_issues with the issue list. "
-            "If no issues: in one short reply (user's language) acknowledge no issues, add one line that regular servicing keeps vehicle life and resale value, then call done_no_issues."
-            "Call exactly one of done_with_issues or done_no_issues. Never say you are calling a tool. No thank you or goodbye.",
+            instructions="Ask about car performance and any issues (noise, mileage, brakes, AC). User's language. "
+            "If they list one or more issues and are done → call done_with_issues(issues=...). "
+            "If they have no issues → call done_no_issues. Call exactly one; the tool will speak. No thank you or goodbye.",
             chat_ctx=chat_ctx,
         )
         self._car_model = car_model
@@ -50,13 +49,16 @@ class SoftEngagementTask(AgentTask[SoftEngagementResult]):
 
     @function_tool
     async def done_with_issues(self, issues: list[str]) -> None:
-        """Call when user listed one or more issues and is done. Same turn: say once (user's language) that you noted the issues and technician will check; then call this with the list. Do not announce any tool or step to the user. Do not call if user has no issues."""
+        """Call when user listed one or more issues and is done. Do not call if user has no issues."""
         raw = [s.strip() for s in (issues or []) if isinstance(s, str) and s.strip()]
         if not raw:
             logger.debug("SoftEngagementTask: done_with_issues with no issues, completing empty")
             self._completed = True
             self.complete(SoftEngagementResult(issues=[]))
             return
+        await self.session.generate_reply(
+            instructions="One short reply in user's language: you noted the issues and the technician will check them specifically.",
+        )
         combined = "; ".join(raw)
         logger.info("SoftEngagementTask: done_with_issues storing %d issue(s) for later DB write: %s", len(raw), combined[:80])
         # Defer DB write to end of call (flush on disconnect)
@@ -76,10 +78,13 @@ class SoftEngagementTask(AgentTask[SoftEngagementResult]):
 
     @function_tool
     async def done_no_issues(self) -> None:
-        """Call only when user has zero issues (said no issues at all). Call after you have said the wrap-up and servicing line in the same turn. Do not call if they listed any issues."""
+        """Call when user has zero issues. Do not call if they listed any issues. """
         if getattr(self, "_completed", False):
             logger.debug("SoftEngagementTask: done_no_issues skipped, task already complete")
             return
+        await self.session.generate_reply(
+            instructions="One short reply in user's language: acknowledge no issues; add one line that regular servicing keeps vehicle life and resale value. No thank you or goodbye.",
+        )
         logger.info("SoftEngagementTask: done_no_issues -> completing with empty list")
         self._completed = True
         self.complete(SoftEngagementResult(issues=[]))
