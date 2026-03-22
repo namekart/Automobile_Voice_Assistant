@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import random
+from datetime import date, time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -20,12 +21,24 @@ def _get_uri() -> str | None:
 
 
 async def _get_pool() -> Any:
-    """Return the async connection pool; create on first use. Thread-safe via lock."""
+    """Return the async connection pool; create on first use. Recreates pool if stale/dead."""
     global _pool
     uri = _get_uri()
     if not uri:
         return None
     async with _lock:
+        # Health check: if pool exists, verify it's still usable
+        if _pool is not None:
+            try:
+                async with _pool.acquire() as conn:
+                    await conn.execute("SELECT 1")
+            except Exception as e:
+                logger.warning("DB pool health check failed (%s), recreating pool", e)
+                try:
+                    await _pool.close()
+                except Exception:
+                    pass
+                _pool = None
         if _pool is None:
             try:
                 import asyncpg
@@ -87,7 +100,7 @@ async def mark_phone_wrong(
                 pn = phone_number or ""
             if cid and not pn:
                 row = await conn.fetchrow(
-                    "SELECT phone_number FROM public.contacts WHERE id = $1 LIMIT 1",
+                    "SELECT p hone_number FROM public.contacts WHERE id = $1 LIMIT 1",
                     cid,
                 )
                 pn = (row["phone_number"] or "") if row else ""
@@ -113,51 +126,68 @@ async def schedule_callback(
     if not (callback_date or "").strip():
         logger.debug("schedule_callback: empty callback_date, skipping")
         return
-    pool = await _get_pool()
-    if pool is None:
-        logger.warning("schedule_callback: no DB pool; skipping")
-        return
     cid = contact_id
     pn = phone_number or ""
-    try:
-        async with pool.acquire() as conn:
-            if not cid and phone_number:
-                row = await conn.fetchrow(
-                    "SELECT id FROM public.contacts WHERE phone_number = $1 LIMIT 1",
-                    phone_number,
-                )
-                cid = str(row["id"]) if row else None
-                pn = phone_number or ""
-            if cid and not pn:
-                row = await conn.fetchrow(
-                    "SELECT phone_number FROM public.contacts WHERE id = $1 LIMIT 1",
-                    cid,
-                )
-                pn = (row["phone_number"] or "") if row else ""
-            if not cid:
-                logger.warning("schedule_callback: could not resolve contact_id; skipping")
+    for attempt in range(2):
+        try:
+            pool = await _get_pool()
+            if pool is None:
+                logger.warning("schedule_callback: no DB pool after retry; skipping")
                 return
-            if not callback_time or not callback_time.strip():
-                hour = 10
-                minute = random.randint(0, 119)
-                if minute >= 60:
-                    hour, minute = 11, minute - 60
-                callback_time = f"{hour:02d}:{minute:02d}"
-            if len(callback_time) == 5 and callback_time[2] == ":":
-                callback_time = callback_time + ":00"
-            await conn.execute(
-                """INSERT INTO public.scheduled_callbacks
-                   (contact_id, phone_number, callback_date, callback_time, preferred_raw, status)
-                   VALUES ($1, $2, $3::date, $4::time, $5, 'pending')""",
-                cid,
-                pn,
-                callback_date.strip(),
-                callback_time,
-                preferred_raw or None,
-            )
-        logger.info("schedule_callback: saved for contact_id=%s on %s at %s", cid, callback_date, callback_time)
-    except Exception as e:
-        logger.warning("schedule_callback failed: %s", e)
+            async with pool.acquire() as conn:
+                if not cid and phone_number:
+                    row = await conn.fetchrow(
+                        "SELECT id FROM public.contacts WHERE phone_number = $1 LIMIT 1",
+                        phone_number,
+                    )
+                    cid = str(row["id"]) if row else None
+                    pn = phone_number or ""
+                if cid and not pn:
+                    row = await conn.fetchrow(
+                        "SELECT phone_number FROM public.contacts WHERE id = $1 LIMIT 1",
+                        cid,
+                    )
+                    pn = (row["phone_number"] or "") if row else ""
+                if not cid:
+                    logger.warning("schedule_callback: could not resolve contact_id; skipping")
+                    return
+                if not callback_time or not callback_time.strip():
+                    hour = 10
+                    minute = random.randint(0, 119)
+                    if minute >= 60:
+                        hour, minute = 11, minute - 60
+                    callback_time = f"{hour:02d}:{minute:02d}"
+                if len(callback_time) == 5 and callback_time[2] == ":":
+                    callback_time = callback_time + ":00"
+                # asyncpg requires native Python date/time objects, not strings
+                cb_date = date.fromisoformat(callback_date.strip()[:10])
+                parts = callback_time.split(":")
+                cb_time = time(int(parts[0]), int(parts[1]), int(parts[2]) if len(parts) > 2 else 0)
+                await conn.execute(
+                    """INSERT INTO public.scheduled_callbacks
+                       (contact_id, phone_number, callback_date, callback_time, preferred_raw, status)
+                       VALUES ($1, $2, $3, $4, $5, 'pending')""",
+                    cid,
+                    pn,
+                    cb_date,
+                    cb_time,
+                    preferred_raw or None,
+                )
+            logger.info("schedule_callback: saved for contact_id=%s on %s at %s", cid, callback_date, callback_time)
+            return
+        except Exception as e:
+            if attempt == 0:
+                logger.warning("schedule_callback attempt 1 failed (%s), retrying with fresh pool", e)
+                # Force pool recreation on next _get_pool() call
+                async with _lock:
+                    try:
+                        if _pool is not None:
+                            await _pool.close()
+                    except Exception:
+                        pass
+                    _pool = None
+            else:
+                logger.warning("schedule_callback failed after retry: %s", e)
 
 
 async def add_contact_note(

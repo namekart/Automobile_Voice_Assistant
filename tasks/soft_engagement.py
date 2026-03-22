@@ -3,10 +3,11 @@ import logging
 from dataclasses import dataclass
 
 from livekit.agents import AgentTask, function_tool
+from tasks import TASK_GUARDRAILS
 
 logger = logging.getLogger(__name__)
 
-
+ 
 @dataclass
 class SoftEngagementResult:
     """Result: list of issues reported (may be empty)."""
@@ -26,9 +27,16 @@ class SoftEngagementTask(AgentTask[SoftEngagementResult]):
         extra_tools: list | None = None,
     ) -> None:
         super().__init__(
-            instructions="Ask about car performance and any issues (noise, mileage, brakes, AC). User's language. "
-            "If they list one or more issues and are done → call done_with_issues(issues=...). "
-            "If they have no issues → call done_no_issues. Call exactly one; the tool will speak. No thank you or goodbye.",
+            # Earlier instructions:
+            # instructions="Ask about car performance and any issues (noise, mileage, brake, AC). User's language (Hinglish). One question, one sentence.\n"
+            # "If they report issues: in one short reply, acknowledge as the agent that you have noted the issues and use them as a reason to gently suggest service visit (e.g. इन्हें ठीक करवाने का यह सही समय है, service में सब check हो जाएगा). Do NOT promise any outcome or anything that guarantees a fix. Then call done_with_issues.\n"
+            # "If no issues: in one short reply acknowledge briefly and add one natural line that regular servicing keeps the car in top shape and maintains resale value, then call done_no_issues.\n"
+            # "Call exactly one of done_with_issues or done_no_issues. Never say you are calling a tool. No thank you or goodbye.",
+            instructions="""Task: Learn about car performance and issues, then gently suggest service. Hinglish. Under 40 words per reply.
+If issues reported: acknowledge the issue, highlight ONE dealership benefit (trained technicians, genuine parts, or pickup-drop), and ask if they would like you to check for a convenient slot. Silently invoke done_with_issues with the issues list IN THE SAME reply — do NOT wait for user to respond to the slot question.
+If no issues: acknowledge briefly, mention regular servicing keeps car in top shape, and ask if they would like a routine checkup. Silently invoke done_no_issues IN THE SAME reply.
+CRITICAL: You MUST invoke exactly ONE tool in your FIRST reply after user answers. NEVER write function names, parentheses, or code syntax in spoken text — tool calls are silent API actions. No thank you or goodbye.
+NEVER invoke a tool without a clear user answer.\n""" + TASK_GUARDRAILS,
             chat_ctx=chat_ctx,
         )
         self._car_model = car_model
@@ -41,24 +49,25 @@ class SoftEngagementTask(AgentTask[SoftEngagementResult]):
         if self._extra_tools:
             await self.update_tools(list(self.tools) + self._extra_tools)
         car = (self._car_model or "their vehicle").strip()
-        logger.info("SoftEngagementTask on_enter: asking about performance and issues for car=%s", car)
-        await self.session.generate_reply(
-            instructions="Ask one short, natural question in the user's language: how the car is performing and whether they have any issues (e.g. noise, mileage, brakes, AC).",
+        logger.info("SoftEngagementTask on_enter: car=%s", car)
+        # Earlier: generate_reply (LLM + TTS ~500-800ms). Now session.say (TTS only ~200ms).
+        # await self.session.generate_reply(
+        #     instructions="Ask one short, natural question in the user's language: how the car is performing and whether they have any issues (e.g. noise, mileage, brakes, AC).",
+        # )
+        await self.session.say(
+            f"Aapki {car} kaise perform kar rahi hai? Koi problem toh nahi aa rahi, jaise noise, mileage drop, brakes, ya AC mein?"
         )
         logger.info("SoftEngagementTask: performance question sent, waiting for user response")
 
     @function_tool
     async def done_with_issues(self, issues: list[str]) -> None:
-        """Call when user listed one or more issues and is done. Do not call if user has no issues."""
+        """Invoke ONLY after user has finished listing issues. Pass the list of issues mentioned (e.g. AC problem, brake noise). NEVER invoke while user is still mid-sentence. NEVER write this tool's name or syntax in your spoken text."""
         raw = [s.strip() for s in (issues or []) if isinstance(s, str) and s.strip()]
         if not raw:
             logger.debug("SoftEngagementTask: done_with_issues with no issues, completing empty")
             self._completed = True
             self.complete(SoftEngagementResult(issues=[]))
             return
-        await self.session.generate_reply(
-            instructions="One short reply in user's language: you noted the issues and the technician will check them specifically.",
-        )
         combined = "; ".join(raw)
         logger.info("SoftEngagementTask: done_with_issues storing %d issue(s) for later DB write: %s", len(raw), combined[:80])
         # Defer DB write to end of call (flush on disconnect)
@@ -77,14 +86,11 @@ class SoftEngagementTask(AgentTask[SoftEngagementResult]):
         self.complete(SoftEngagementResult(issues=raw))
 
     @function_tool
-    async def done_no_issues(self) -> None:
-        """Call when user has zero issues. Do not call if they listed any issues. """
+    async def done_no_issues(self, unused: str = "") -> None:
+        """Invoke ONLY when user clearly says no issues (sab theek hai, koi problem nahi). NEVER invoke if user mentioned even one issue. NEVER write this tool's name or syntax in your spoken text."""
         if getattr(self, "_completed", False):
             logger.debug("SoftEngagementTask: done_no_issues skipped, task already complete")
             return
-        await self.session.generate_reply(
-            instructions="One short reply in user's language: acknowledge no issues; add one line that regular servicing keeps vehicle life and resale value. No thank you or goodbye.",
-        )
         logger.info("SoftEngagementTask: done_no_issues -> completing with empty list")
         self._completed = True
         self.complete(SoftEngagementResult(issues=[]))
